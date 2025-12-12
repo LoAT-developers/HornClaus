@@ -101,7 +101,11 @@ class TypedVar {
 
     public TypedVar(Type type, String name, Optional<Expression> initializer) {
         this.type = type;
-        this.name = name;
+        if (name.startsWith("|")) {
+            this.name = name;
+        } else {
+            this.name = "|" + name + "|";
+        }
         this.initializer = initializer;
     }
 
@@ -214,7 +218,11 @@ class Scope {
 class FunctionSymbol {
 
     public FunctionSymbol(String name, List<Type> type) {
-        this.name = name;
+        if (name.startsWith("|")) {
+            this.name = name;
+        } else {
+            this.name = "|" + name + "|";
+        }
         this.type = type;
     }
 
@@ -223,7 +231,7 @@ class FunctionSymbol {
 
     @Override
     public String toString() {
-        return "|" + name + "|";
+        return name;
     }
 
     @Override
@@ -345,6 +353,20 @@ class Clause {
         if (!vars.isEmpty()) {
             res.append(")");
         }
+        return res.toString();
+    }
+
+    public String toAri() {
+        var res = new StringBuilder();
+        res.append("(rule ");
+        res.append(premise);
+        res.append(" ");
+        res.append(conclusion);
+        if (!constraint.equals(Expression.True)) {
+            res.append(" :guard ");
+            res.append(constraint);
+        }
+        res.append(")\n");
         return res.toString();
     }
 
@@ -520,9 +542,9 @@ class CHCs {
             predicates.add(q.getFirst().f);
         }
         for (var p: predicates) {
-            res.append("(declare-fun |");
-            res.append(p.name);
-            res.append("| (");
+            res.append("(declare-fun ");
+            res.append(p);
+            res.append(" (");
             for (var t: p.type) {
                 res.append(t);
                 res.append(" ");
@@ -548,15 +570,47 @@ class CHCs {
         return res.toString();
     }
 
+    public String toAri() {
+        var res = new StringBuilder();
+        res.append("(format LCTRS)\n");
+        res.append("(theory Ints)\n");
+        Set<FunctionSymbol> predicates = new LinkedHashSet<>();
+        predicates.add(fact.f);
+        for (var c: clauses) {
+            predicates.add(c.premise.f);
+            predicates.add(c.conclusion.f);
+        }
+        for (var q: queries) {
+            predicates.add(q.getFirst().f);
+        }
+        for (var p: predicates) {
+            res.append("(fun ");
+            res.append(p);
+            res.append(" (-> ");
+            for (var t: p.type) {
+                res.append(t);
+                res.append(" ");
+            }
+            res.append("Int))\n");
+        }
+        res.append("(entrypoint ");
+        res.append(fact.f);
+        res.append(")\n");
+        for (var c: clauses) {
+            res.append(c.toAri());
+        }
+        return res.toString();
+    }
+
 }
 
-public class ParserExample {
+public class HornClaus {
 
     private Scope scope = new Scope();
     private Map<String, IASTFunctionDefinition> functions = new LinkedHashMap<>();
     private CHCs chcs;
 
-    ParserExample(FunctionSymbol startFlow) {
+    HornClaus(FunctionSymbol startFlow) {
         chcs = new CHCs(mkFunApp(startFlow));
     }
 
@@ -1238,7 +1292,19 @@ public class ParserExample {
     }
 
     public static void main(String[] args) throws Exception {
-        FileContent fileContent = FileContent.createForExternalFileLocation(args[0]);
+        if (args.length != 2) {
+            System.out.println("***** HornClaus *****");
+            System.out.println("usage:");
+            System.out.println("java -jar HornClaus.jar --[smt2|ari] program.c");
+            System.exit(0);
+        }
+        var ari = args[0].equals("--ari");
+        if (!ari && !args[0].equals("--smt2")) {
+            System.err.println("unknown format " + args[0]);
+            System.exit(-1);
+        }
+
+        FileContent fileContent = FileContent.createForExternalFileLocation(args[1]);
 
         Map<String, String> definedSymbols = new HashMap<>();
         String[] includePaths = new String[0];
@@ -1256,7 +1322,7 @@ public class ParserExample {
         }
 
         var startFlow = new FunctionSymbol("start", List.of());
-        ParserExample parser = new ParserExample(startFlow);
+        HornClaus parser = new HornClaus(startFlow);
         var flow = new Flow(startFlow);
         for (var declaration : translationUnit.getDeclarations()) {
             switch (declaration) {
@@ -1273,7 +1339,11 @@ public class ParserExample {
                 default -> throw new IllegalArgumentException("unsupported declaration: " + declaration);
             }
         }
-        System.out.println(parser.chcs.toSexp());
+        if (ari) {
+            System.out.println(parser.chcs.toAri());
+        } else {
+            System.out.println(parser.chcs.toSexp());
+        }
     }
 
 }
