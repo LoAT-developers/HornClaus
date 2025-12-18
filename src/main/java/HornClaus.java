@@ -138,6 +138,8 @@ class Scope {
     private Map<String, BaseType> undefined = new LinkedHashMap<>();
     ArrayList<LinkedHashMap<String, TypedVar>> vars = new ArrayList<>();
     private ArrayList<IASTFileLocation> context = new ArrayList<>();
+    private Map<String, Expression> enums = new LinkedHashMap<>();
+    private Map<String, BaseType> typedefs = new LinkedHashMap<>();
 
     Scope() {
         vars.add(new LinkedHashMap<>());
@@ -211,6 +213,22 @@ class Scope {
 
     ArrayList<IASTFileLocation> getContext() {
         return context;
+    }
+
+    void addEnumValue(String name, Expression val) {
+        enums.put(name, val);
+    }
+
+    Optional<Expression> getEnumVal(String name) {
+        return Optional.ofNullable(enums.get(name));
+    }
+
+    void addTypedef(String name, BaseType val) {
+        typedefs.put(name, val);
+    }
+
+    Optional<BaseType> getTypedef(String name) {
+        return Optional.ofNullable(typedefs.get(name));
     }
 
 }
@@ -902,6 +920,21 @@ public class HornClaus {
         return new Pair<>(arg, updated);
     }
 
+    Expression parseLiteral(IASTLiteralExpression literalExpression) {
+        switch (literalExpression.getKind()) {
+            case IASTLiteralExpression.lk_false -> {
+                return Util.mkAtom("false", Type.Bool);
+            }
+            case IASTLiteralExpression.lk_true -> {
+                return Util.mkAtom("true", Type.Bool);
+            }
+            case IASTLiteralExpression.lk_integer_constant -> {
+                return Util.mkAtom(new String(literalExpression.getValue()), Type.Int);
+            }
+            default -> throw new IllegalArgumentException("unsupported literal " + literalExpression.getRawSignature());
+        }
+    }
+
     Expression parseExpression(IASTExpression expression, Flow flow) {
         switch (expression) {
             case IASTArraySubscriptExpression arraySubscriptExpression -> {
@@ -927,25 +960,19 @@ public class HornClaus {
                 return parseFunctionCall(functionCallExpression, flow);
             }
             case IASTIdExpression idExpression -> {
-                var res = scope.getVar(idExpression.getName().toString());
-                if (!res.isPresent()) {
-                    System.err.println(idExpression.getFileLocation().getStartingLineNumber() + ":" + idExpression.getFileLocation().getNodeOffset());
+                var name = idExpression.getName().toString();
+                var varRes = scope.getVar(name);
+                if (varRes.isPresent()) {
+                    return Util.mkAtom(varRes.get());
                 }
-                return Util.mkAtom(res.get());
+                var enumRes = scope.getEnumVal(name);
+                if (enumRes.isPresent()) {
+                    return enumRes.get();
+                }
+                throw new IllegalArgumentException(idExpression.getFileLocation().getStartingLineNumber() + ":" + idExpression.getFileLocation().getNodeOffset());
             }
             case IASTLiteralExpression literalExpression -> {
-                switch (literalExpression.getKind()) {
-                    case IASTLiteralExpression.lk_false -> {
-                        return Util.mkAtom("false", Type.Bool);
-                    }
-                    case IASTLiteralExpression.lk_true -> {
-                        return Util.mkAtom("true", Type.Bool);
-                    }
-                    case IASTLiteralExpression.lk_integer_constant -> {
-                        return Util.mkAtom(new String(literalExpression.getValue()), Type.Int);
-                    }
-                    default -> throw new IllegalArgumentException("unsupported literal " + literalExpression.getRawSignature());
-                }
+                return parseLiteral(literalExpression);
             }
             case IASTUnaryExpression unaryExpression -> {
                 var arg = parseExpression(unaryExpression.getOperand(), flow);
@@ -1035,9 +1062,31 @@ public class HornClaus {
                 case IASTSimpleDeclSpecifier.t_unspecified -> BaseType.Int;
                 default -> throw new IllegalArgumentException("unsupported type: " + spec.getRawSignature());
             };
-            case IASTEnumerationSpecifier spec -> BaseType.Int;
-            default ->
-                throw new IllegalArgumentException("unsupported specifier: " + specifier.getRawSignature());
+            case IASTNamedTypeSpecifier spec -> {
+                var type = scope.getTypedef(spec.getName().toString());
+                if (type.isPresent()) {
+                    yield type.get();
+                }
+                throw new IllegalArgumentException("unknown type " + type);
+            }
+            case IASTEnumerationSpecifier spec -> {
+                int count = 0;
+                for (var e : spec.getEnumerators()) {
+                    Expression value;
+                    value = switch (e.getValue()) {
+                        case null -> Util.mkAtom(Integer.toString(count), Type.Int);
+                        case IASTLiteralExpression lit -> {
+                            count = Integer.parseInt(new String(lit.getValue()));
+                            yield parseLiteral(lit);
+                        }
+                        default -> throw new IllegalArgumentException("enum with non-literal value");
+                    };
+                    scope.addEnumValue(e.getName().toString(), value);
+                    ++count;
+                }
+                yield BaseType.Int;
+            }
+            default -> throw new IllegalArgumentException("unsupported specifier: " + specifier.getRawSignature());
         };
     }
 
@@ -1071,6 +1120,16 @@ public class HornClaus {
 
     FunApp mkFunApp(String name, IASTFileLocation loc, Map<TypedVar, Expression> subs) {
         return mkFunApp(mkFunctionSymbol(name, loc), subs);
+    }
+
+    void parseTypedef(IASTSimpleDeclaration declaration) {
+        var type = parseDeclSpecifier(declaration.getDeclSpecifier());
+        var declarators = declaration.getDeclarators();
+        if (declarators.length != 1) {
+            throw new IllegalArgumentException("a typedef must have one and only one declarator");
+        }
+        var id = declarators[0].getName().toString();
+        scope.addTypedef(id, type);
     }
 
     void parseDeclaration(IASTSimpleDeclaration declaration, Flow flow) {
@@ -1328,7 +1387,12 @@ public class HornClaus {
         for (var declaration : translationUnit.getDeclarations()) {
             switch (declaration) {
                 case IASTSimpleDeclaration simpleDeclaration -> {
-                    parser.parseDeclaration(simpleDeclaration, flow);
+                    // TODO What's the proper way to distinguish typedefs and other declarations?
+                    if (simpleDeclaration.getRawSignature().startsWith("typedef")) {
+                        parser.parseTypedef(simpleDeclaration);
+                    } else {
+                        parser.parseDeclaration(simpleDeclaration, flow);
+                    }
                 }
                 case IASTFunctionDefinition functionDefinition -> {
                     if (functionDefinition.getDeclarator().getName().toString().equals("main")) {
