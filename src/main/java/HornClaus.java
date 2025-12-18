@@ -628,7 +628,7 @@ public class HornClaus {
     private Map<String, IASTFunctionDefinition> functions = new LinkedHashMap<>();
     private CHCs chcs;
 
-    public static String delimiter = "-";
+    public static String delimiter = ":";
 
     HornClaus(FunctionSymbol startFlow) {
         chcs = new CHCs(mkFunApp(startFlow));
@@ -1340,12 +1340,12 @@ public class HornClaus {
     FunctionSymbol mkFunctionSymbol(String name, IASTFileLocation loc) {
         StringBuilder sb = new StringBuilder();
         sb.append(name);
-        sb.append(":");
+        sb.append(HornClaus.delimiter);
         sb.append(loc.getStartingLineNumber());
         sb.append(HornClaus.delimiter);
         sb.append(loc.getNodeOffset());
         for (var c: scope.getContext().reversed()) {
-            sb.append(":");
+            sb.append(HornClaus.delimiter);
             sb.append(c.getStartingLineNumber());
             sb.append(HornClaus.delimiter);
             sb.append(c.getNodeOffset());
